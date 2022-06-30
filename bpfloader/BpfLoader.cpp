@@ -51,43 +51,76 @@
 #include "bpf/BpfUtils.h"
 
 using android::base::EndsWith;
+using android::bpf::domain;
 using std::string;
+
+constexpr unsigned long long kTetheringApexDomainBitmask =
+        domainToBitmask(domain::tethering) |
+        domainToBitmask(domain::net_private) |
+        domainToBitmask(domain::net_shared) |
+        domainToBitmask(domain::netd_readonly) |
+        domainToBitmask(domain::netd_shared);
 
 // see b/162057235. For arbitrary program types, the concern is that due to the lack of
 // SELinux access controls over BPF program attachpoints, we have no way to control the
 // attachment of programs to shared resources (or to detect when a shared resource
 // has one BPF program replace another that is attached there)
 constexpr bpf_prog_type kVendorAllowedProgTypes[] = {
-        BPF_PROG_TYPE_TRACEPOINT,
+        BPF_PROG_TYPE_SOCKET_FILTER,
 };
 
 struct Location {
     const char* const dir;
     const char* const prefix;
+    unsigned long long allowedDomainBitmask;
     const bpf_prog_type* allowedProgTypes = nullptr;
     size_t allowedProgTypesLength = 0;
 };
 
 const Location locations[] = {
-        // Tethering mainline module: tether offload
+        // S+ Tethering mainline module (network_stack): tether offload
         {
                 .dir = "/apex/com.android.tethering/etc/bpf/",
                 .prefix = "tethering/",
+                .allowedDomainBitmask = kTetheringApexDomainBitmask,
         },
-        // Tethering mainline module: netd, clatd, ...etc
+        // T+ Tethering mainline module (shared with netd & system server)
+        // netutils_wrapper (for iptables xt_bpf) has access to programs
+        {
+                .dir = "/apex/com.android.tethering/etc/bpf/netd_shared/",
+                .prefix = "netd_shared/",
+                .allowedDomainBitmask = kTetheringApexDomainBitmask,
+        },
+        // T+ Tethering mainline module (shared with netd & system server)
+        // netutils_wrapper has no access, netd has read only access
+        {
+                .dir = "/apex/com.android.tethering/etc/bpf/netd_readonly/",
+                .prefix = "netd_readonly/",
+                .allowedDomainBitmask = kTetheringApexDomainBitmask,
+        },
+        // T+ Tethering mainline module (shared with system server)
         {
                 .dir = "/apex/com.android.tethering/etc/bpf/net_shared/",
-                .prefix = "",
+                .prefix = "net_shared/",
+                .allowedDomainBitmask = kTetheringApexDomainBitmask,
+        },
+        // T+ Tethering mainline module (not shared, just network_stack)
+        {
+                .dir = "/apex/com.android.tethering/etc/bpf/net_private/",
+                .prefix = "net_private/",
+                .allowedDomainBitmask = kTetheringApexDomainBitmask,
         },
         // Core operating system
         {
                 .dir = "/system/etc/bpf/",
                 .prefix = "",
+                .allowedDomainBitmask = domainToBitmask(domain::platform),
         },
         // Vendor operating system
         {
                 .dir = "/vendor/etc/bpf/",
                 .prefix = "vendor/",
+                .allowedDomainBitmask = domainToBitmask(domain::vendor),
                 .allowedProgTypes = kVendorAllowedProgTypes,
                 .allowedProgTypesLength = arraysize(kVendorAllowedProgTypes),
         },
@@ -107,7 +140,9 @@ int loadAllElfObjects(const Location& location) {
             progPath += s;
 
             bool critical;
-            int ret = android::bpf::loadProg(progPath.c_str(), &critical, location.prefix,
+            int ret = android::bpf::loadProg(progPath.c_str(), &critical,
+                                             location.prefix,
+                                             location.allowedDomainBitmask,
                                              location.allowedProgTypes,
                                              location.allowedProgTypesLength);
             if (ret) {
@@ -143,9 +178,16 @@ int main(int argc, char** argv) {
     (void)argc;
     android::base::InitLogging(argv, &android::base::KernelLogger);
 
-    // Load all ELF objects, create programs and maps, and pin them
+    // Create all the pin subdirectories
+    // (this must be done first to allow selinux_context and pin_subdir functionality,
+    //  which could otherwise fail with ENOENT during object pinning or renaming,
+    //  due to ordering issues)
     for (const auto& location : locations) {
         createSysFsBpfSubDir(location.prefix);
+    }
+
+    // Load all ELF objects, create programs and maps, and pin them
+    for (const auto& location : locations) {
         if (loadAllElfObjects(location) != 0) {
             ALOGE("=== CRITICAL FAILURE LOADING BPF PROGRAMS FROM %s ===", location.dir);
             ALOGE("If this triggers reliably, you're probably missing kernel options or patches.");
