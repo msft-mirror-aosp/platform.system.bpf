@@ -66,19 +66,6 @@ bool exists(const char* const path) {
     abort();  // can only hit this if permissions (likely selinux) are screwed up
 }
 
-bool isInProcessTethering() {
-    bool in = exists("/apex/com.android.tethering/etc/flag/in-process");
-    bool out = exists("/apex/com.android.tethering/etc/flag/out-of-process");
-    if (in && out) abort();  // bad build
-
-    // Handle cases where the module explicitly tells us
-    if (in) return true;
-    if (out) return false;
-
-    ALOGE("FATAL: cannot determine if Tethering is in or out of process.");
-    abort();
-}
-
 constexpr unsigned long long kTetheringApexDomainBitmask =
         domainToBitmask(domain::tethering) |
         domainToBitmask(domain::net_private) |
@@ -90,12 +77,19 @@ constexpr unsigned long long kTetheringApexDomainBitmask =
 // as KPROBE, PERF_EVENT, TRACEPOINT are dangerous to use from mainline updatable code,
 // since they are less stable abi/api and may conflict with platform uses of bpf.
 constexpr bpf_prog_type kTetheringApexAllowedProgTypes[] = {
-        BPF_PROG_TYPE_CGROUP_SOCK_ADDR,
         BPF_PROG_TYPE_CGROUP_SKB,
         BPF_PROG_TYPE_CGROUP_SOCK,
+        BPF_PROG_TYPE_CGROUP_SOCKOPT,
+        BPF_PROG_TYPE_CGROUP_SOCK_ADDR,
+        BPF_PROG_TYPE_CGROUP_SYSCTL,
+        BPF_PROG_TYPE_LWT_IN,
+        BPF_PROG_TYPE_LWT_OUT,
+        BPF_PROG_TYPE_LWT_SEG6LOCAL,
+        BPF_PROG_TYPE_LWT_XMIT,
         BPF_PROG_TYPE_SCHED_ACT,
         BPF_PROG_TYPE_SCHED_CLS,
         BPF_PROG_TYPE_SOCKET_FILTER,
+        BPF_PROG_TYPE_SOCK_OPS,
         BPF_PROG_TYPE_XDP,
 };
 
@@ -284,21 +278,6 @@ int main(int argc, char** argv) {
     //  kernel does not have CONFIG_HAVE_EBPF_JIT=y)
     if (writeProcSysFile("/proc/sys/net/core/bpf_jit_kallsyms", "1\n") &&
         android::bpf::isAtLeastKernelVersion(5, 4, 0)) return 1;
-
-    // This is ugly... but this allows InProcessTethering which runs as system_server,
-    // instead of as network_stack to access /sys/fs/bpf/tethering, which would otherwise
-    // (due to genfscon rules) have fs_bpf_tethering selinux context, which is restricted
-    // to the network_stack process only (which is where out of process tethering runs)
-    if (isInProcessTethering() && !exists("/sys/fs/bpf/tethering")) {
-        if (createSysFsBpfSubDir(/* /sys/fs/bpf/ */ "net_shared")) return 1;
-        if (createSysFsBpfSubDir(/* /sys/fs/bpf/ */ "net_shared/tethering")) return 1;
-
-        /* /sys/fs/bpf/tethering -> net_shared/tethering */
-        if (symlink("net_shared/tethering", "/sys/fs/bpf/tethering")) {
-            ALOGE("symlink(net_shared/tethering, /sys/fs/bpf/tethering) -> %s", strerror(errno));
-            return 1;
-        }
-    }
 
     // Create all the pin subdirectories
     // (this must be done first to allow selinux_context and pin_subdir functionality,

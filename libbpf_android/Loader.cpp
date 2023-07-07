@@ -17,6 +17,7 @@
 #define LOG_TAG "LibBpfLoader"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <linux/bpf.h>
 #include <linux/elf.h>
 #include <log/log.h>
@@ -30,13 +31,13 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-// This is BpfLoader v0.34
+// This is BpfLoader v0.38
 // WARNING: If you ever hit cherrypick conflicts here you're doing it wrong:
 // You are NOT allowed to cherrypick bpfloader related patches out of order.
 // (indeed: cherrypicking is probably a bad idea and you should merge instead)
 // Mainline supports ONLY the published versions of the bpfloader for each Android release.
 #define BPFLOADER_VERSION_MAJOR 0u
-#define BPFLOADER_VERSION_MINOR 34u
+#define BPFLOADER_VERSION_MINOR 38u
 #define BPFLOADER_VERSION ((BPFLOADER_VERSION_MAJOR << 16) | BPFLOADER_VERSION_MINOR)
 
 #include "BpfSyscallWrappers.h"
@@ -185,17 +186,38 @@ typedef struct {
  * Instead use the DEFINE_(BPF|XDP)_(PROG|MAP)... & LICENSE/CRITICAL macros.
  */
 sectionType sectionNameTypes[] = {
-        {"bind4/", BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET4_BIND},
-        {"bind6/", BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET6_BIND},
-        {"cgroupskb/", BPF_PROG_TYPE_CGROUP_SKB, BPF_ATTACH_TYPE_UNSPEC},
-        {"cgroupsock/", BPF_PROG_TYPE_CGROUP_SOCK, BPF_ATTACH_TYPE_UNSPEC},
-        {"kprobe/", BPF_PROG_TYPE_KPROBE, BPF_ATTACH_TYPE_UNSPEC},
-        {"perf_event/", BPF_PROG_TYPE_PERF_EVENT, BPF_ATTACH_TYPE_UNSPEC},
-        {"schedact/", BPF_PROG_TYPE_SCHED_ACT, BPF_ATTACH_TYPE_UNSPEC},
-        {"schedcls/", BPF_PROG_TYPE_SCHED_CLS, BPF_ATTACH_TYPE_UNSPEC},
-        {"skfilter/", BPF_PROG_TYPE_SOCKET_FILTER, BPF_ATTACH_TYPE_UNSPEC},
-        {"tracepoint/", BPF_PROG_TYPE_TRACEPOINT, BPF_ATTACH_TYPE_UNSPEC},
-        {"xdp/", BPF_PROG_TYPE_XDP, BPF_ATTACH_TYPE_UNSPEC},
+        {"bind4/",         BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET4_BIND},
+        {"bind6/",         BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET6_BIND},
+        {"cgroupskb/",     BPF_PROG_TYPE_CGROUP_SKB,       BPF_ATTACH_TYPE_UNSPEC},
+        {"cgroupsock/",    BPF_PROG_TYPE_CGROUP_SOCK,      BPF_ATTACH_TYPE_UNSPEC},
+        {"connect4/",      BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET4_CONNECT},
+        {"connect6/",      BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET6_CONNECT},
+        {"egress/",        BPF_PROG_TYPE_CGROUP_SKB,       BPF_CGROUP_INET_EGRESS},
+        {"getsockopt/",    BPF_PROG_TYPE_CGROUP_SOCKOPT,   BPF_CGROUP_GETSOCKOPT},
+        {"ingress/",       BPF_PROG_TYPE_CGROUP_SKB,       BPF_CGROUP_INET_INGRESS},
+        {"kprobe/",        BPF_PROG_TYPE_KPROBE,           BPF_ATTACH_TYPE_UNSPEC},
+        {"kretprobe/",     BPF_PROG_TYPE_KPROBE,           BPF_ATTACH_TYPE_UNSPEC},
+        {"lwt_in/",        BPF_PROG_TYPE_LWT_IN,           BPF_ATTACH_TYPE_UNSPEC},
+        {"lwt_out/",       BPF_PROG_TYPE_LWT_OUT,          BPF_ATTACH_TYPE_UNSPEC},
+        {"lwt_seg6local/", BPF_PROG_TYPE_LWT_SEG6LOCAL,    BPF_ATTACH_TYPE_UNSPEC},
+        {"lwt_xmit/",      BPF_PROG_TYPE_LWT_XMIT,         BPF_ATTACH_TYPE_UNSPEC},
+        {"perf_event/",    BPF_PROG_TYPE_PERF_EVENT,       BPF_ATTACH_TYPE_UNSPEC},
+        {"postbind4/",     BPF_PROG_TYPE_CGROUP_SOCK,      BPF_CGROUP_INET4_POST_BIND},
+        {"postbind6/",     BPF_PROG_TYPE_CGROUP_SOCK,      BPF_CGROUP_INET6_POST_BIND},
+        {"recvmsg4/",      BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP4_RECVMSG},
+        {"recvmsg6/",      BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP6_RECVMSG},
+        {"schedact/",      BPF_PROG_TYPE_SCHED_ACT,        BPF_ATTACH_TYPE_UNSPEC},
+        {"schedcls/",      BPF_PROG_TYPE_SCHED_CLS,        BPF_ATTACH_TYPE_UNSPEC},
+        {"sendmsg4/",      BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP4_SENDMSG},
+        {"sendmsg6/",      BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP6_SENDMSG},
+        {"setsockopt/",    BPF_PROG_TYPE_CGROUP_SOCKOPT,   BPF_CGROUP_SETSOCKOPT},
+        {"skfilter/",      BPF_PROG_TYPE_SOCKET_FILTER,    BPF_ATTACH_TYPE_UNSPEC},
+        {"sockops/",       BPF_PROG_TYPE_SOCK_OPS,         BPF_CGROUP_SOCK_OPS},
+        {"sysctl",         BPF_PROG_TYPE_CGROUP_SYSCTL,    BPF_CGROUP_SYSCTL},
+        {"tracepoint/",    BPF_PROG_TYPE_TRACEPOINT,       BPF_ATTACH_TYPE_UNSPEC},
+        {"uprobe/",        BPF_PROG_TYPE_KPROBE,           BPF_ATTACH_TYPE_UNSPEC},
+        {"uretprobe/",     BPF_PROG_TYPE_KPROBE,           BPF_ATTACH_TYPE_UNSPEC},
+        {"xdp/",           BPF_PROG_TYPE_XDP,              BPF_ATTACH_TYPE_UNSPEC},
 };
 
 typedef struct {
@@ -794,6 +816,17 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
             continue;
         }
 
+        if ((isArm() && isKernel32Bit() && md[i].ignore_on_arm32) ||
+            (isArm() && isKernel64Bit() && md[i].ignore_on_aarch64) ||
+            (isX86() && isKernel32Bit() && md[i].ignore_on_x86_32) ||
+            (isX86() && isKernel64Bit() && md[i].ignore_on_x86_64) ||
+            (isRiscV() && md[i].ignore_on_riscv64)) {
+            ALOGI("skipping map %s which is ignored on %s", mapNames[i].c_str(),
+                  describeArch());
+            mapFds.push_back(unique_fd());
+            continue;
+        }
+
         enum bpf_map_type type = md[i].type;
         if (type == BPF_MAP_TYPE_DEVMAP_HASH && !isAtLeastKernelVersion(5, 4, 0)) {
             // On Linux Kernels older than 5.4 this map type doesn't exist, but it can kind
@@ -880,7 +913,8 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
                     ALOGE("create %s -> %d [%d:%s]", createLoc.c_str(), ret, err, strerror(err));
                     return -err;
                 }
-                ret = rename(createLoc.c_str(), mapPinLoc.c_str());
+                ret = renameat2(AT_FDCWD, createLoc.c_str(),
+                                AT_FDCWD, mapPinLoc.c_str(), RENAME_NOREPLACE);
                 if (ret) {
                     int err = errno;
                     ALOGE("rename %s %s -> %d [%d:%s]", createLoc.c_str(), mapPinLoc.c_str(), ret,
@@ -955,9 +989,12 @@ static void applyRelo(void* insnsPtr, Elf64_Addr offset, int fd) {
     insnIndex = offset / sizeof(struct bpf_insn);
     insn = &insns[insnIndex];
 
-    ALOGD("applying relo to instruction at byte offset: %llu, "
-          "insn offset %d, insn %llx",
-          (unsigned long long)offset, insnIndex, *(unsigned long long*)insn);
+    // Occasionally might be useful for relocation debugging, but pretty spammy
+    if (0) {
+        ALOGD("applying relo to instruction at byte offset: %llu, "
+              "insn offset %d, insn %llx",
+              (unsigned long long)offset, insnIndex, *(unsigned long long*)insn);
+    }
 
     if (insn->code != (BPF_LD | BPF_IMM | BPF_DW)) {
         ALOGE("Dumping all instructions till ins %d", insnIndex);
@@ -1045,6 +1082,15 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
             continue;
         }
 
+        if ((isArm() && isKernel32Bit() && cs[i].prog_def->ignore_on_arm32) ||
+            (isArm() && isKernel64Bit() && cs[i].prog_def->ignore_on_aarch64) ||
+            (isX86() && isKernel32Bit() && cs[i].prog_def->ignore_on_x86_32) ||
+            (isX86() && isKernel64Bit() && cs[i].prog_def->ignore_on_x86_64) ||
+            (isRiscV() && cs[i].prog_def->ignore_on_riscv64)) {
+            ALOGD("cs[%d].name:%s is ignored on %s", i, name.c_str(), describeArch());
+            continue;
+        }
+
         if (unrecognized(pin_subdir)) return -ENOTDIR;
 
         if (specified(selinux_context)) {
@@ -1129,7 +1175,8 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
                     ALOGE("create %s -> %d [%d:%s]", createLoc.c_str(), ret, err, strerror(err));
                     return -err;
                 }
-                ret = rename(createLoc.c_str(), progPinLoc.c_str());
+                ret = renameat2(AT_FDCWD, createLoc.c_str(),
+                                AT_FDCWD, progPinLoc.c_str(), RENAME_NOREPLACE);
                 if (ret) {
                     int err = errno;
                     ALOGE("rename %s %s -> %d [%d:%s]", createLoc.c_str(), progPinLoc.c_str(), ret,
