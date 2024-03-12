@@ -50,19 +50,7 @@
 #include "bpf/BpfUtils.h"
 
 using android::base::EndsWith;
-using android::bpf::domain;
 using std::string;
-
-bool exists(const char* const path) {
-    int v = access(path, F_OK);
-    if (!v) {
-        ALOGI("%s exists.", path);
-        return true;
-    }
-    if (errno == ENOENT) return false;
-    ALOGE("FATAL: access(%s, F_OK) -> %d [%d:%s]", path, v, errno, strerror(errno));
-    abort();  // can only hit this if permissions (likely selinux) are screwed up
-}
 
 // Networking-related program types are limited to the Tethering Apex
 // to prevent things from breaking due to conflicts on mainline updates
@@ -93,7 +81,6 @@ const android::bpf::Location locations[] = {
         {
                 .dir = "/system/etc/bpf/",
                 .prefix = "",
-                .allowedDomainBitmask = domainToBitmask(domain::platform),
                 .allowedProgTypes = kPlatformAllowedProgTypes,
                 .allowedProgTypesLength = arraysize(kPlatformAllowedProgTypes),
         },
@@ -101,7 +88,6 @@ const android::bpf::Location locations[] = {
         {
                 .dir = "/system/etc/bpf/uprobestats/",
                 .prefix = "uprobestats/",
-                .allowedDomainBitmask = domainToBitmask(domain::platform),
                 .allowedProgTypes = kUprobestatsAllowedProgTypes,
                 .allowedProgTypesLength = arraysize(kUprobestatsAllowedProgTypes),
         },
@@ -109,7 +95,6 @@ const android::bpf::Location locations[] = {
         {
                 .dir = "/vendor/etc/bpf/",
                 .prefix = "vendor/",
-                .allowedDomainBitmask = domainToBitmask(domain::vendor),
                 .allowedProgTypes = kVendorAllowedProgTypes,
                 .allowedProgTypesLength = arraysize(kVendorAllowedProgTypes),
         },
@@ -162,72 +147,13 @@ int createSysFsBpfSubDir(const char* const prefix) {
     return 0;
 }
 
-// Technically 'value' doesn't need to be newline terminated, but it's best
-// to include a newline to match 'echo "value" > /proc/sys/...foo' behaviour,
-// which is usually how kernel devs test the actual sysctl interfaces.
-int writeProcSysFile(const char *filename, const char *value) {
-    android::base::unique_fd fd(open(filename, O_WRONLY | O_CLOEXEC));
-    if (fd < 0) {
-        const int err = errno;
-        ALOGE("open('%s', O_WRONLY | O_CLOEXEC) -> %s", filename, strerror(err));
-        return -err;
-    }
-    int len = strlen(value);
-    int v = write(fd, value, len);
-    if (v < 0) {
-        const int err = errno;
-        ALOGE("write('%s', '%s', %d) -> %s", filename, value, len, strerror(err));
-        return -err;
-    }
-    if (v != len) {
-        // In practice, due to us only using this for /proc/sys/... files, this can't happen.
-        ALOGE("write('%s', '%s', %d) -> short write [%d]", filename, value, len, v);
-        return -EINVAL;
-    }
-    return 0;
-}
-
 int main(int argc, char** argv) {
     (void)argc;
     android::base::InitLogging(argv, &android::base::KernelLogger);
 
-    // Linux 5.16-rc1 changed the default to 2 (disabled but changeable), but we need 0 (enabled)
-    // (this writeFile is known to fail on at least 4.19, but always defaults to 0 on pre-5.13,
-    // on 5.13+ it depends on CONFIG_BPF_UNPRIV_DEFAULT_OFF)
-    if (writeProcSysFile("/proc/sys/kernel/unprivileged_bpf_disabled", "0\n") &&
-        android::bpf::isAtLeastKernelVersion(5, 13, 0)) return 1;
-
-    // Enable the eBPF JIT -- but do note that on 64-bit kernels it is likely
-    // already force enabled by the kernel config option BPF_JIT_ALWAYS_ON.
-    // (Note: this (open) will fail with ENOENT 'No such file or directory' if
-    //  kernel does not have CONFIG_BPF_JIT=y)
-    // BPF_JIT is required by R VINTF (which means 4.14/4.19/5.4 kernels),
-    // but 4.14/4.19 were released with P & Q, and only 5.4 is new in R+.
-    if (writeProcSysFile("/proc/sys/net/core/bpf_jit_enable", "1\n")) return 1;
-
-    // Enable JIT kallsyms export for privileged users only
-    // (Note: this (open) will fail with ENOENT 'No such file or directory' if
-    //  kernel does not have CONFIG_HAVE_EBPF_JIT=y)
-    if (writeProcSysFile("/proc/sys/net/core/bpf_jit_kallsyms", "1\n")) return 1;
-
-    // Create all the pin subdirectories
-    // (this must be done first to allow selinux_context and pin_subdir functionality,
-    //  which could otherwise fail with ENOENT during object pinning or renaming,
-    //  due to ordering issues)
-    for (const auto& location : locations) {
-        if (createSysFsBpfSubDir(location.prefix)) return 1;
-    }
-
-    // Note: there's no actual src dir for fs_bpf_loader .o's,
-    // so it is not listed in 'locations[].prefix'.
-    // This is because this is primarily meant for triggering genfscon rules,
-    // and as such this will likely always be the case.
-    // Thus we need to manually create the /sys/fs/bpf/loader subdirectory.
-    if (createSysFsBpfSubDir("loader")) return 1;
-
     // Load all ELF objects, create programs and maps, and pin them
     for (const auto& location : locations) {
-        if (loadAllElfObjects(location) != 0) {
+        if (createSysFsBpfSubDir(location.prefix) || loadAllElfObjects(location)) {
             ALOGE("=== CRITICAL FAILURE LOADING BPF PROGRAMS FROM %s ===", location.dir);
             ALOGE("If this triggers reliably, you're probably missing kernel options or patches.");
             ALOGE("If this triggers randomly, you might be hitting some memory allocation "
@@ -238,7 +164,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (android::base::SetProperty("bpf.progs_loaded", "1") == false) {
+    if (!android::base::SetProperty("bpf.progs_loaded", "1")) {
         ALOGE("Failed to set bpf.progs_loaded property");
         return 1;
     }
