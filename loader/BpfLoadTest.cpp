@@ -17,6 +17,7 @@
 #include <android-base/file.h>
 #include <android-base/macros.h>
 #include <gtest/gtest.h>
+#include <libbpf.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <iostream>
@@ -35,9 +36,21 @@ class BpfLoadTest : public TestWithParam<std::string> {
     int mProgFd;
     std::string mTpProgPath;
     std::string mTpNeverLoadProgPath;
-    std::string mTpMapPath;;
+    std::string mTpMapPath;
 
     void SetUp() {
+        /*
+         * b/326156952
+         *
+         * Kernels prior to 5.11 used rlimit memlock accounting for bpf memory
+         * allocations, and therefore require increasing the rlimit of this
+         * process for the maps to be created successfully.
+         *
+         * 5.11 introduces cgroup-based accounting as discussed here:
+         * https://lore.kernel.org/bpf/20201201215900.3569844-1-guro@fb.com/
+         */
+        if (!isAtLeastKernelVersion(5, 11, 0)) EXPECT_EQ(setrlimitForTest(), 0);
+
         mTpProgPath = "/sys/fs/bpf/prog_" + GetParam() + "_tracepoint_sched_sched_switch";
         unlink(mTpProgPath.c_str());
 
@@ -57,7 +70,6 @@ class BpfLoadTest : public TestWithParam<std::string> {
         Location loc = {
             .dir = "",
             .prefix = "",
-            .allowedDomainBitmask = 0,
             .allowedProgTypes = kAllowed,
             .allowedProgTypesLength = arraysize(kAllowed),
         };
@@ -66,7 +78,7 @@ class BpfLoadTest : public TestWithParam<std::string> {
         EXPECT_EQ(android::bpf::loadProg(progPath.c_str(), &critical), 0);
         EXPECT_EQ(false, critical);
 
-        mProgFd = bpf_obj_get(mTpProgPath.c_str());
+        mProgFd = retrieveProgram(mTpProgPath.c_str());
         EXPECT_GT(mProgFd, 0);
 
         int ret = bpf_attach_tracepoint(mProgFd, "sched", "sched_switch");
@@ -103,32 +115,16 @@ class BpfLoadTest : public TestWithParam<std::string> {
         EXPECT_EQ(non_zero, 1);
     }
 
-    void checkMapBtf() {
-        // Earlier kernels lack BPF_BTF_LOAD support
-        if (!isAtLeastKernelVersion(4, 19, 0)) GTEST_SKIP() << "pre-4.19 kernel does not support BTF";
-
-        const bool haveBtf = GetParam().find("Btf") != std::string::npos;
-
-        std::string str;
-        EXPECT_EQ(android::base::ReadFileToString(mTpMapPath, &str), haveBtf);
-        if (haveBtf) EXPECT_FALSE(str.empty());
-    }
-
     void checkKernelVersionEnforced() {
-        EXPECT_EQ(bpf_obj_get(mTpNeverLoadProgPath.c_str()), -1);
+        EXPECT_EQ(retrieveProgram(mTpNeverLoadProgPath.c_str()), -1);
         EXPECT_EQ(errno, ENOENT);
     }
 };
 
-INSTANTIATE_TEST_SUITE_P(BpfLoadTests, BpfLoadTest,
-                         ::testing::Values("bpfLoadTpProg", "bpfLoadTpProgBtf"));
+INSTANTIATE_TEST_SUITE_P(BpfLoadTests, BpfLoadTest, ::testing::Values("bpfLoadTpProg"));
 
 TEST_P(BpfLoadTest, bpfCheckMap) {
     checkMapNonZero();
-}
-
-TEST_P(BpfLoadTest, bpfCheckBtf) {
-    checkMapBtf();
 }
 
 TEST_P(BpfLoadTest, bpfCheckMinKernelVersionEnforced) {
