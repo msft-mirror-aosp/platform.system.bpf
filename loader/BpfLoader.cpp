@@ -14,9 +14,7 @@
  * limitations under the License.
  */
 
-#ifndef LOG_TAG
-#define LOG_TAG "bpfloader"
-#endif
+#define LOG_TAG "BpfLoader"
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -40,7 +38,6 @@
 
 #include <android-base/logging.h>
 #include <android-base/macros.h>
-#include <android-base/properties.h>
 #include <android-base/stringprintf.h>
 #include <android-base/strings.h>
 #include <android-base/unique_fd.h>
@@ -50,19 +47,7 @@
 #include "bpf/BpfUtils.h"
 
 using android::base::EndsWith;
-using android::bpf::domain;
 using std::string;
-
-bool exists(const char* const path) {
-    int v = access(path, F_OK);
-    if (!v) {
-        ALOGI("%s exists.", path);
-        return true;
-    }
-    if (errno == ENOENT) return false;
-    ALOGE("FATAL: access(%s, F_OK) -> %d [%d:%s]", path, v, errno, strerror(errno));
-    abort();  // can only hit this if permissions (likely selinux) are screwed up
-}
 
 // Networking-related program types are limited to the Tethering Apex
 // to prevent things from breaking due to conflicts on mainline updates
@@ -93,7 +78,6 @@ const android::bpf::Location locations[] = {
         {
                 .dir = "/system/etc/bpf/",
                 .prefix = "",
-                .allowedDomainBitmask = domainToBitmask(domain::platform),
                 .allowedProgTypes = kPlatformAllowedProgTypes,
                 .allowedProgTypesLength = arraysize(kPlatformAllowedProgTypes),
         },
@@ -101,7 +85,6 @@ const android::bpf::Location locations[] = {
         {
                 .dir = "/system/etc/bpf/uprobestats/",
                 .prefix = "uprobestats/",
-                .allowedDomainBitmask = domainToBitmask(domain::platform),
                 .allowedProgTypes = kUprobestatsAllowedProgTypes,
                 .allowedProgTypesLength = arraysize(kUprobestatsAllowedProgTypes),
         },
@@ -109,7 +92,6 @@ const android::bpf::Location locations[] = {
         {
                 .dir = "/vendor/etc/bpf/",
                 .prefix = "vendor/",
-                .allowedDomainBitmask = domainToBitmask(domain::vendor),
                 .allowedProgTypes = kVendorAllowedProgTypes,
                 .allowedProgTypesLength = arraysize(kVendorAllowedProgTypes),
         },
@@ -134,7 +116,7 @@ int loadAllElfObjects(const android::bpf::Location& location) {
                 if (critical) retVal = ret;
                 ALOGE("Failed to load object: %s, ret: %s", progPath.c_str(), std::strerror(-ret));
             } else {
-                ALOGI("Loaded object: %s", progPath.c_str());
+                ALOGV("Loaded object: %s", progPath.c_str());
             }
         }
         closedir(dir);
@@ -162,60 +144,24 @@ int createSysFsBpfSubDir(const char* const prefix) {
     return 0;
 }
 
-// Technically 'value' doesn't need to be newline terminated, but it's best
-// to include a newline to match 'echo "value" > /proc/sys/...foo' behaviour,
-// which is usually how kernel devs test the actual sysctl interfaces.
-int writeProcSysFile(const char *filename, const char *value) {
-    android::base::unique_fd fd(open(filename, O_WRONLY | O_CLOEXEC));
-    if (fd < 0) {
-        const int err = errno;
-        ALOGE("open('%s', O_WRONLY | O_CLOEXEC) -> %s", filename, strerror(err));
-        return -err;
-    }
-    int len = strlen(value);
-    int v = write(fd, value, len);
-    if (v < 0) {
-        const int err = errno;
-        ALOGE("write('%s', '%s', %d) -> %s", filename, value, len, strerror(err));
-        return -err;
-    }
-    if (v != len) {
-        // In practice, due to us only using this for /proc/sys/... files, this can't happen.
-        ALOGE("write('%s', '%s', %d) -> short write [%d]", filename, value, len, v);
-        return -EINVAL;
-    }
-    return 0;
-}
-
-int main(int argc, char** argv) {
-    (void)argc;
+int main(int __unused argc, char** argv, char * const envp[]) {
     android::base::InitLogging(argv, &android::base::KernelLogger);
-
-    // Create all the pin subdirectories
-    // (this must be done first to allow selinux_context and pin_subdir functionality,
-    //  which could otherwise fail with ENOENT during object pinning or renaming,
-    //  due to ordering issues)
-    for (const auto& location : locations) {
-        if (createSysFsBpfSubDir(location.prefix)) return 1;
-    }
 
     // Load all ELF objects, create programs and maps, and pin them
     for (const auto& location : locations) {
-        if (loadAllElfObjects(location) != 0) {
+        if (createSysFsBpfSubDir(location.prefix) || loadAllElfObjects(location)) {
             ALOGE("=== CRITICAL FAILURE LOADING BPF PROGRAMS FROM %s ===", location.dir);
             ALOGE("If this triggers reliably, you're probably missing kernel options or patches.");
             ALOGE("If this triggers randomly, you might be hitting some memory allocation "
                   "problems or startup script race.");
             ALOGE("--- DO NOT EXPECT SYSTEM TO BOOT SUCCESSFULLY ---");
             sleep(20);
-            return 2;
+            return 120;
         }
     }
 
-    if (android::base::SetProperty("bpf.progs_loaded", "1") == false) {
-        ALOGE("Failed to set bpf.progs_loaded property");
-        return 1;
-    }
-
-    return 0;
+    const char * args[] = { "/apex/com.android.tethering/bin/netbpfload", "done", NULL, };
+    execve(args[0], (char**)args, envp);
+    ALOGE("FATAL: execve(): %d[%s]", errno, strerror(errno));
+    return 121;
 }
