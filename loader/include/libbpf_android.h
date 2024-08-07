@@ -37,5 +37,7 @@ int loadProg(const char* elfPath, bool* isCritical, const Location &location = {
 // Exposed for testing
 unsigned int readSectionUint(const char* name, std::ifstream& elfFile, unsigned int defVal);
 
+int legacyBpfLoader(int argc, char** argv, char * const envp[]);
+
 }  // namespace bpf
 }  // namespace android
