@@ -46,6 +46,7 @@
 
 #include <android-base/cmsg.h>
 #include <android-base/file.h>
+#include <android-base/logging.h>
 #include <android-base/strings.h>
 #include <android-base/unique_fd.h>
 
@@ -57,11 +58,13 @@
 // Unspecified attach type is 0 which is BPF_CGROUP_INET_INGRESS.
 #define BPF_ATTACH_TYPE_UNSPEC BPF_CGROUP_INET_INGRESS
 
+using android::base::EndsWith;
 using android::base::StartsWith;
 using android::base::unique_fd;
 using std::ifstream;
 using std::ios;
 using std::optional;
+using std::strerror;
 using std::string;
 using std::vector;
 
@@ -877,5 +880,153 @@ int loadProg(const char* elfPath, bool* isCritical, const Location& location) {
     return ret;
 }
 
+// Networking-related program types are limited to the Tethering Apex
+// to prevent things from breaking due to conflicts on mainline updates
+// (exception made for socket filters, ie. xt_bpf for potential use in iptables,
+// or for attaching to sockets directly)
+constexpr bpf_prog_type kPlatformAllowedProgTypes[] = {
+        BPF_PROG_TYPE_KPROBE,
+        BPF_PROG_TYPE_PERF_EVENT,
+        BPF_PROG_TYPE_SOCKET_FILTER,
+        BPF_PROG_TYPE_TRACEPOINT,
+        BPF_PROG_TYPE_UNSPEC,  // Will be replaced with fuse bpf program type
+};
+
+constexpr bpf_prog_type kUprobestatsAllowedProgTypes[] = {
+        BPF_PROG_TYPE_KPROBE,
+};
+
+// see b/162057235. For arbitrary program types, the concern is that due to the lack of
+// SELinux access controls over BPF program attachpoints, we have no way to control the
+// attachment of programs to shared resources (or to detect when a shared resource
+// has one BPF program replace another that is attached there)
+constexpr bpf_prog_type kVendorAllowedProgTypes[] = {
+        BPF_PROG_TYPE_SOCKET_FILTER,
+};
+
+const Location locations[] = {
+        // Core operating system
+        {
+                .dir = "/system/etc/bpf/",
+                .prefix = "",
+                .allowedProgTypes = kPlatformAllowedProgTypes,
+                .allowedProgTypesLength = arraysize(kPlatformAllowedProgTypes),
+        },
+        // uprobestats
+        {
+                .dir = "/system/etc/bpf/uprobestats/",
+                .prefix = "uprobestats/",
+                .allowedProgTypes = kUprobestatsAllowedProgTypes,
+                .allowedProgTypesLength = arraysize(kUprobestatsAllowedProgTypes),
+        },
+        // Vendor operating system
+        {
+                .dir = "/vendor/etc/bpf/",
+                .prefix = "vendor/",
+                .allowedProgTypes = kVendorAllowedProgTypes,
+                .allowedProgTypesLength = arraysize(kVendorAllowedProgTypes),
+        },
+};
+
+int loadAllElfObjects(const Location& location) {
+    int retVal = 0;
+    DIR* dir;
+    struct dirent* ent;
+
+    if ((dir = opendir(location.dir)) != NULL) {
+        while ((ent = readdir(dir)) != NULL) {
+            string s = ent->d_name;
+            if (!EndsWith(s, ".o")) continue;
+
+            string progPath(location.dir);
+            progPath += s;
+
+            bool critical;
+            int ret = loadProg(progPath.c_str(), &critical, location);
+            if (ret) {
+                if (critical) retVal = ret;
+                ALOGE("Failed to load object: %s, ret: %s", progPath.c_str(), strerror(-ret));
+            } else {
+                ALOGV("Loaded object: %s", progPath.c_str());
+            }
+        }
+        closedir(dir);
+    }
+    return retVal;
+}
+
+int createSysFsBpfSubDir(const char* const prefix) {
+    if (*prefix) {
+        mode_t prevUmask = umask(0);
+
+        string s = "/sys/fs/bpf/";
+        s += prefix;
+
+        errno = 0;
+        int ret = mkdir(s.c_str(), S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO);
+        if (ret && errno != EEXIST) {
+            const int err = errno;
+            ALOGE("Failed to create directory: %s, ret: %s", s.c_str(), strerror(err));
+            return -err;
+        }
+
+        umask(prevUmask);
+    }
+    return 0;
+}
+
 }  // namespace bpf
 }  // namespace android
+
+// ----- extern C stuff for rust below here -----
+
+void initLogging() {
+    // since we only ever get called from mainline NetBpfLoad
+    // (see packages/modules/Connectivity/netbpfload/NetBpfLoad.cpp around line 516)
+    // and there no arguments, so we can just pretend/assume this is the case.
+    const char* argv[] = {"/system/bin/bpfloader", NULL};
+    android::base::InitLogging(const_cast<char**>(argv), &android::base::KernelLogger);
+}
+
+void legacyBpfLoader() {
+    // Load all ELF objects, create programs and maps, and pin them
+    for (const auto& location : android::bpf::locations) {
+        if (android::bpf::createSysFsBpfSubDir(location.prefix) ||
+            android::bpf::loadAllElfObjects(location)) {
+            ALOGE("=== CRITICAL FAILURE LOADING BPF PROGRAMS FROM %s ===", location.dir);
+            ALOGE("If this triggers reliably, you're probably missing kernel options or patches.");
+            ALOGE("If this triggers randomly, you might be hitting some memory allocation "
+                  "problems or startup script race.");
+            ALOGE("--- DO NOT EXPECT SYSTEM TO BOOT SUCCESSFULLY ---");
+            sleep(20);
+            exit(120);
+        }
+    }
+}
+
+void execNetBpfLoadDone() {
+    const char* args[] = {"/apex/com.android.tethering/bin/netbpfload", "done", NULL};
+    execve(args[0], (char**)args, environ);
+    ALOGE("FATAL: execve(): %d[%s]", errno, strerror(errno));
+    exit(121);
+}
+
+void logVerbose(const char* msg) {
+    ALOGV("%s", msg);
+}
+
+void logDebug(const char* msg) {
+    ALOGD("%s", msg);
+}
+
+void logInfo(const char* msg) {
+    ALOGI("%s", msg);
+}
+
+void logWarn(const char* msg) {
+    ALOGW("%s", msg);
+}
+
+void logError(const char* msg) {
+    ALOGE("%s", msg);
+}
