@@ -59,6 +59,28 @@ cc_library {
     ],
 }
 
+rust_bindgen {
+    name: "libbpf_android_bindgen",
+    crate_name: "bpf_android_bindgen",
+    wrapper_src: "include/libbpf_android.h",
+    source_stem: "bindings",
+    bindgen_flags: [
+        "--verbose",
+    ],
+    cflags: [
+        "-Werror",
+        "-Wall",
+        "-Wextra",
+        "-Wno-pragma-once-outside-header",
+    ],
+    shared_libs: [
+        "libbase",
+        "libutils",
+        "liblog",
+        "libbpf_android",
+    ],
+}
+
 cc_test {
     name: "libbpf_load_test",
     test_suites: ["general-tests"],

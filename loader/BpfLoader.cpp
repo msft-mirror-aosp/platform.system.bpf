@@ -16,6 +16,9 @@
 
 #include <libbpf_android.h>
 
-int main(int argc, char** argv, char * const envp[]) {
-  return android::bpf::legacyBpfLoader(argc, argv, envp);
+__noreturn int main() {
+    initLogging();
+    legacyBpfLoader();
+    execNetBpfLoadDone();
+    // unreachable
 }

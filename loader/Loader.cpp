@@ -975,27 +975,58 @@ int createSysFsBpfSubDir(const char* const prefix) {
     return 0;
 }
 
-int legacyBpfLoader(int __unused argc, char** argv, char * const envp[]) {
-    base::InitLogging(argv, &base::KernelLogger);
+}  // namespace bpf
+}  // namespace android
 
+// ----- extern C stuff for rust below here -----
+
+void initLogging() {
+    // since we only ever get called from mainline NetBpfLoad
+    // (see packages/modules/Connectivity/netbpfload/NetBpfLoad.cpp around line 516)
+    // and there no arguments, so we can just pretend/assume this is the case.
+    const char* argv[] = {"/system/bin/bpfloader", NULL};
+    android::base::InitLogging(const_cast<char**>(argv), &android::base::KernelLogger);
+}
+
+void legacyBpfLoader() {
     // Load all ELF objects, create programs and maps, and pin them
-    for (const auto& location : locations) {
-        if (createSysFsBpfSubDir(location.prefix) || loadAllElfObjects(location)) {
+    for (const auto& location : android::bpf::locations) {
+        if (android::bpf::createSysFsBpfSubDir(location.prefix) ||
+            android::bpf::loadAllElfObjects(location)) {
             ALOGE("=== CRITICAL FAILURE LOADING BPF PROGRAMS FROM %s ===", location.dir);
             ALOGE("If this triggers reliably, you're probably missing kernel options or patches.");
             ALOGE("If this triggers randomly, you might be hitting some memory allocation "
                   "problems or startup script race.");
             ALOGE("--- DO NOT EXPECT SYSTEM TO BOOT SUCCESSFULLY ---");
             sleep(20);
-            return 120;
+            exit(120);
         }
     }
-
-    const char * args[] = { "/apex/com.android.tethering/bin/netbpfload", "done", NULL, };
-    execve(args[0], (char**)args, envp);
-    ALOGE("FATAL: execve(): %d[%s]", errno, strerror(errno));
-    return 121;
 }
 
-}  // namespace bpf
-}  // namespace android
+void execNetBpfLoadDone() {
+    const char* args[] = {"/apex/com.android.tethering/bin/netbpfload", "done", NULL};
+    execve(args[0], (char**)args, environ);
+    ALOGE("FATAL: execve(): %d[%s]", errno, strerror(errno));
+    exit(121);
+}
+
+void logVerbose(const char* msg) {
+    ALOGV("%s", msg);
+}
+
+void logDebug(const char* msg) {
+    ALOGD("%s", msg);
+}
+
+void logInfo(const char* msg) {
+    ALOGI("%s", msg);
+}
+
+void logWarn(const char* msg) {
+    ALOGW("%s", msg);
+}
+
+void logError(const char* msg) {
+    ALOGE("%s", msg);
+}
