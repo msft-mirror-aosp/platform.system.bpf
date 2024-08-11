@@ -111,29 +111,14 @@ cc_test {
     require_root: true,
 }
 
-cc_binary {
+rust_binary {
     name: "bpfloader",
-
-    defaults: ["bpf_defaults"],
-    cflags: [
-        "-Wall",
-        "-Werror",
-        "-Wthread-safety",
-    ],
-    sanitize: {
-        integer_overflow: true,
-    },
-
-    header_libs: ["bpf_headers"],
-    shared_libs: [
-        "libbase",
-        "liblog",
-    ],
-    static_libs: ["libbpf_android"],
     srcs: [
-        "BpfLoader.cpp",
+        "bpfloader.rs",
     ],
-
+    rustlibs: [
+        "libbpf_android_bindgen",
+    ],
     required: [
         "timeInState.o",
     ],

@@ -14,11 +14,15 @@
  * limitations under the License.
  */
 
-#include <libbpf_android.h>
+//! BPF loader for system and vendor applications
 
-__noreturn int main() {
-    initLogging();
-    legacyBpfLoader();
-    execNetBpfLoadDone();
-    // unreachable
+fn main() {
+    // SAFETY: Linking in the existing legacy bpfloader functionality.
+    // Any of the three following bindgen functions can abort() or exit()
+    // on failure and execNetBpfLoadDone() execve()'s.
+    unsafe {
+        bpf_android_bindgen::initLogging();
+        bpf_android_bindgen::legacyBpfLoader();
+        bpf_android_bindgen::execNetBpfLoadDone();
+    }
 }
