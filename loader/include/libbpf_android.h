@@ -49,6 +49,7 @@ extern "C" {
 
 // The C++ portion of the BpfLoader is exposed as 3 functions to be called in order.
 void initLogging();
+void createBpfFsSubDirectories();
 void legacyBpfLoader();
 __noreturn void execNetBpfLoadDone();
 
