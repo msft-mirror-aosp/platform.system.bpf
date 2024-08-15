@@ -973,18 +973,25 @@ void initLogging() {
     android::base::InitLogging(const_cast<char**>(argv), &android::base::KernelLogger);
 }
 
+void createBpfFsSubDirectories() {
+    for (const auto& location : android::bpf::locations) {
+        if (android::bpf::createSysFsBpfSubDir(location.prefix)) {
+            exit(120);
+        }
+    }
+}
+
 void legacyBpfLoader() {
     // Load all ELF objects, create programs and maps, and pin them
     for (const auto& location : android::bpf::locations) {
-        if (android::bpf::createSysFsBpfSubDir(location.prefix) ||
-            android::bpf::loadAllElfObjects(location)) {
+        if (android::bpf::loadAllElfObjects(location)) {
             ALOGE("=== CRITICAL FAILURE LOADING BPF PROGRAMS FROM %s ===", location.dir);
             ALOGE("If this triggers reliably, you're probably missing kernel options or patches.");
             ALOGE("If this triggers randomly, you might be hitting some memory allocation "
                   "problems or startup script race.");
             ALOGE("--- DO NOT EXPECT SYSTEM TO BOOT SUCCESSFULLY ---");
             sleep(20);
-            exit(120);
+            exit(121);
         }
     }
 }
@@ -993,7 +1000,7 @@ void execNetBpfLoadDone() {
     const char* args[] = {"/apex/com.android.tethering/bin/netbpfload", "done", NULL};
     execve(args[0], (char**)args, environ);
     ALOGE("FATAL: execve(): %d[%s]", errno, strerror(errno));
-    exit(121);
+    exit(122);
 }
 
 void logVerbose(const char* msg) {
