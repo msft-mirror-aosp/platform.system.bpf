@@ -55,9 +55,6 @@
 // Size of the BPF log buffer for verifier logging
 #define BPF_LOAD_LOG_SZ 0xfffff
 
-// Unspecified attach type is 0 which is BPF_CGROUP_INET_INGRESS.
-#define BPF_ATTACH_TYPE_UNSPEC BPF_CGROUP_INET_INGRESS
-
 using android::base::EndsWith;
 using android::base::StartsWith;
 using android::base::unique_fd;
@@ -86,7 +83,6 @@ static string pathToObjName(const string& path) {
 typedef struct {
     const char* name;
     enum bpf_prog_type type;
-    enum bpf_attach_type expected_attach_type;
 } sectionType;
 
 /*
@@ -100,18 +96,17 @@ typedef struct {
  * Instead use the DEFINE_(BPF|XDP)_(PROG|MAP)... & LICENSE/CRITICAL macros.
  */
 sectionType sectionNameTypes[] = {
-        {"kprobe/",        BPF_PROG_TYPE_KPROBE,           BPF_ATTACH_TYPE_UNSPEC},
-        {"kretprobe/",     BPF_PROG_TYPE_KPROBE,           BPF_ATTACH_TYPE_UNSPEC},
-        {"perf_event/",    BPF_PROG_TYPE_PERF_EVENT,       BPF_ATTACH_TYPE_UNSPEC},
-        {"skfilter/",      BPF_PROG_TYPE_SOCKET_FILTER,    BPF_ATTACH_TYPE_UNSPEC},
-        {"tracepoint/",    BPF_PROG_TYPE_TRACEPOINT,       BPF_ATTACH_TYPE_UNSPEC},
-        {"uprobe/",        BPF_PROG_TYPE_KPROBE,           BPF_ATTACH_TYPE_UNSPEC},
-        {"uretprobe/",     BPF_PROG_TYPE_KPROBE,           BPF_ATTACH_TYPE_UNSPEC},
+        {"kprobe/",        BPF_PROG_TYPE_KPROBE},
+        {"kretprobe/",     BPF_PROG_TYPE_KPROBE},
+        {"perf_event/",    BPF_PROG_TYPE_PERF_EVENT},
+        {"skfilter/",      BPF_PROG_TYPE_SOCKET_FILTER},
+        {"tracepoint/",    BPF_PROG_TYPE_TRACEPOINT},
+        {"uprobe/",        BPF_PROG_TYPE_KPROBE},
+        {"uretprobe/",     BPF_PROG_TYPE_KPROBE},
 };
 
 typedef struct {
     enum bpf_prog_type type;
-    enum bpf_attach_type expected_attach_type;
     string name;
     vector<char> data;
     vector<char> rel_data;
@@ -304,12 +299,6 @@ static enum bpf_prog_type getSectionType(string& name) {
     return BPF_PROG_TYPE_UNSPEC;
 }
 
-static enum bpf_attach_type getExpectedAttachType(string& name) {
-    for (auto& snt : sectionNameTypes)
-        if (StartsWith(name, snt.name)) return snt.expected_attach_type;
-    return BPF_ATTACH_TYPE_UNSPEC;
-}
-
 static string getSectionName(enum bpf_prog_type type)
 {
     for (auto& snt : sectionNameTypes)
@@ -426,9 +415,6 @@ static int readCodeSections(ifstream& elfFile, vector<codeSection>& cs,
             ALOGE("Program type %s not permitted here", getSectionName(ptype).c_str());
             return -1;
         }
-
-        // This must be done before '/' is replaced with '_'.
-        cs_temp.expected_attach_type = getExpectedAttachType(name);
 
         string oldName = name;
 
@@ -774,7 +760,6 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
               .log_level = 1,
               .log_buf = ptr_to_u64(log_buf.data()),
               .log_size = static_cast<__u32>(log_buf.size()),
-              .expected_attach_type = cs[i].expected_attach_type,
             };
             strlcpy(req.prog_name, cs[i].name.c_str(), sizeof(req.prog_name));
             fd.reset(bpf(BPF_PROG_LOAD, req));
@@ -988,18 +973,25 @@ void initLogging() {
     android::base::InitLogging(const_cast<char**>(argv), &android::base::KernelLogger);
 }
 
+void createBpfFsSubDirectories() {
+    for (const auto& location : android::bpf::locations) {
+        if (android::bpf::createSysFsBpfSubDir(location.prefix)) {
+            exit(120);
+        }
+    }
+}
+
 void legacyBpfLoader() {
     // Load all ELF objects, create programs and maps, and pin them
     for (const auto& location : android::bpf::locations) {
-        if (android::bpf::createSysFsBpfSubDir(location.prefix) ||
-            android::bpf::loadAllElfObjects(location)) {
+        if (android::bpf::loadAllElfObjects(location)) {
             ALOGE("=== CRITICAL FAILURE LOADING BPF PROGRAMS FROM %s ===", location.dir);
             ALOGE("If this triggers reliably, you're probably missing kernel options or patches.");
             ALOGE("If this triggers randomly, you might be hitting some memory allocation "
                   "problems or startup script race.");
             ALOGE("--- DO NOT EXPECT SYSTEM TO BOOT SUCCESSFULLY ---");
             sleep(20);
-            exit(120);
+            exit(121);
         }
     }
 }
@@ -1008,7 +1000,7 @@ void execNetBpfLoadDone() {
     const char* args[] = {"/apex/com.android.tethering/bin/netbpfload", "done", NULL};
     execve(args[0], (char**)args, environ);
     ALOGE("FATAL: execve(): %d[%s]", errno, strerror(errno));
-    exit(121);
+    exit(122);
 }
 
 void logVerbose(const char* msg) {
