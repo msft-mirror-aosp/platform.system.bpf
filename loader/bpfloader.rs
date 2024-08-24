@@ -16,7 +16,19 @@
 
 //! BPF loader for system and vendor applications
 
+#[cfg(enable_libbpf)]
+fn load_libbpf_progs() {
+    // Libbpf loader functionality here.
+}
+
+#[cfg(not(enable_libbpf))]
+fn load_libbpf_progs() {
+    // Empty stub for feature flag disabled case
+}
+
 fn main() {
+    load_libbpf_progs();
+
     // SAFETY: Linking in the existing legacy bpfloader functionality.
     // Any of the four following bindgen functions can abort() or exit()
     // on failure and execNetBpfLoadDone() execve()'s.
