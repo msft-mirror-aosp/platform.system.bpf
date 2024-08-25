@@ -33,7 +33,7 @@
 
 #include "BpfSyscallWrappers.h"
 #include "bpf/BpfUtils.h"
-#include "bpf/bpf_map_def.h"
+#include "bpf_map_def.h"
 #include "include/libbpf_android.h"
 
 #include <cstdlib>
