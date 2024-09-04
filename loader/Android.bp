@@ -113,6 +113,10 @@ cc_test {
 
 rust_binary {
     name: "bpfloader",
+    cfgs: select(release_flag("RELEASE_BPF_ENABLE_LIBBPF"), {
+        true: ["enable_libbpf"],
+        default: [],
+    }),
     srcs: [
         "bpfloader.rs",
     ],
