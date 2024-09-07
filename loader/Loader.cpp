@@ -877,11 +877,6 @@ constexpr bpf_prog_type kPlatformAllowedProgTypes[] = {
         BPF_PROG_TYPE_UNSPEC,  // Will be replaced with fuse bpf program type
 };
 
-constexpr bpf_prog_type kMemEventsAllowedProgTypes[] = {
-        BPF_PROG_TYPE_TRACEPOINT,
-        BPF_PROG_TYPE_SOCKET_FILTER,
-};
-
 constexpr bpf_prog_type kUprobestatsAllowedProgTypes[] = {
         BPF_PROG_TYPE_KPROBE,
 };
@@ -901,13 +896,6 @@ const Location locations[] = {
                 .prefix = "",
                 .allowedProgTypes = kPlatformAllowedProgTypes,
                 .allowedProgTypesLength = arraysize(kPlatformAllowedProgTypes),
-        },
-        // memevents
-        {
-                .dir = "/system/etc/bpf/memevents/",
-                .prefix = "memevents/",
-                .allowedProgTypes = kMemEventsAllowedProgTypes,
-                .allowedProgTypesLength = arraysize(kMemEventsAllowedProgTypes),
         },
         // uprobestats
         {
