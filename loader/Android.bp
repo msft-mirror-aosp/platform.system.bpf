@@ -37,7 +37,6 @@ cc_library {
             },
         },
     },
-
     shared_libs: [
         "libbase",
         "libutils",
@@ -50,13 +49,7 @@ cc_library {
         "bpf_headers",
     ],
     export_include_dirs: ["include"],
-
-    defaults: ["bpf_defaults"],
-    cflags: [
-        "-Werror",
-        "-Wall",
-        "-Wextra",
-    ],
+    defaults: ["bpf_cc_defaults"],
 }
 
 rust_bindgen {
@@ -88,10 +81,8 @@ cc_test {
     srcs: [
         "BpfLoadTest.cpp",
     ],
-    defaults: ["bpf_defaults"],
+    defaults: ["bpf_cc_defaults"],
     cflags: [
-        "-Wall",
-        "-Werror",
         "-Wno-error=unused-variable",
     ],
     static_libs: [
