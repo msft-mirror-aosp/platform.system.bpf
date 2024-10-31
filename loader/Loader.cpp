@@ -877,6 +877,11 @@ constexpr bpf_prog_type kPlatformAllowedProgTypes[] = {
         BPF_PROG_TYPE_UNSPEC,  // Will be replaced with fuse bpf program type
 };
 
+constexpr bpf_prog_type kMemEventsAllowedProgTypes[] = {
+        BPF_PROG_TYPE_TRACEPOINT,
+        BPF_PROG_TYPE_SOCKET_FILTER,
+};
+
 constexpr bpf_prog_type kUprobestatsAllowedProgTypes[] = {
         BPF_PROG_TYPE_KPROBE,
 };
@@ -896,6 +901,13 @@ const Location locations[] = {
                 .prefix = "",
                 .allowedProgTypes = kPlatformAllowedProgTypes,
                 .allowedProgTypesLength = arraysize(kPlatformAllowedProgTypes),
+        },
+        // memevents
+        {
+                .dir = "/system/etc/bpf/memevents/",
+                .prefix = "memevents/",
+                .allowedProgTypes = kMemEventsAllowedProgTypes,
+                .allowedProgTypesLength = arraysize(kMemEventsAllowedProgTypes),
         },
         // uprobestats
         {
@@ -1001,24 +1013,4 @@ void execNetBpfLoadDone() {
     execve(args[0], (char**)args, environ);
     ALOGE("FATAL: execve(): %d[%s]", errno, strerror(errno));
     exit(122);
-}
-
-void logVerbose(const char* msg) {
-    ALOGV("%s", msg);
-}
-
-void logDebug(const char* msg) {
-    ALOGD("%s", msg);
-}
-
-void logInfo(const char* msg) {
-    ALOGI("%s", msg);
-}
-
-void logWarn(const char* msg) {
-    ALOGW("%s", msg);
-}
-
-void logError(const char* msg) {
-    ALOGE("%s", msg);
 }
