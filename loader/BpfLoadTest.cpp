@@ -73,11 +73,11 @@ class BpfLoadTest : public ::testing::Test {
         };
         EXPECT_EQ(android::bpf::loadProg(progPath.c_str(), &critical, loc), -1);
 
-        EXPECT_EQ(android::bpf::loadProg(progPath.c_str(), &critical), 0);
+        ASSERT_EQ(android::bpf::loadProg(progPath.c_str(), &critical), 0);
         EXPECT_EQ(false, critical);
 
         mProgFd = retrieveProgram(mTpProgPath.c_str());
-        EXPECT_GT(mProgFd, 0);
+        ASSERT_GT(mProgFd, 0);
 
         int ret = bpf_attach_tracepoint(mProgFd, "sched", "sched_switch");
         EXPECT_NE(ret, 0);
@@ -114,8 +114,8 @@ class BpfLoadTest : public ::testing::Test {
     }
 
     void checkKernelVersionEnforced() {
-        EXPECT_EQ(retrieveProgram(mTpNeverLoadProgPath.c_str()), -1);
-        EXPECT_EQ(errno, ENOENT);
+        ASSERT_EQ(retrieveProgram(mTpNeverLoadProgPath.c_str()), -1);
+        ASSERT_EQ(errno, ENOENT);
     }
 };
 
