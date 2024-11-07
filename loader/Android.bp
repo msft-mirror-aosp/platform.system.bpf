@@ -113,6 +113,8 @@ rust_binary {
     ],
     rustlibs: [
         "libbpf_android_bindgen",
+        "libandroid_logger",
+        "liblog_rust",
     ],
     required: [
         "timeInState.o",
