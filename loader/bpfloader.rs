@@ -15,15 +15,25 @@
  */
 
 //! BPF loader for system and vendor applications
+
+// Enable dead_code until feature flag is removed.
+#![cfg_attr(not(enable_libbpf), allow(dead_code))]
+
+use android_ids::{AID_ROOT, AID_SYSTEM};
 use android_logger::AndroidLogger;
-use log::{error, info, Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
+use anyhow::{anyhow, ensure};
+use libbpf_rs::{MapCore, ObjectBuilder};
+use libc::{mode_t, S_IRGRP, S_IRUSR, S_IWGRP, S_IWUSR};
+use log::{debug, error, info, Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
 use std::{
     cmp::max,
-    env,
-    fs::File,
+    env, fs,
+    fs::{File, Permissions},
     io::{LineWriter, Write},
     os::fd::FromRawFd,
+    os::unix::fs::{chown, PermissionsExt},
     panic,
+    path::Path,
     sync::{Arc, Mutex},
 };
 
@@ -112,16 +122,163 @@ impl BpfKmsgLogger {
     }
 }
 
+struct MapDesc {
+    name: &'static str,
+    perms: mode_t,
+}
+
+struct ProgDesc {
+    name: &'static str,
+}
+
+struct BpfFileDesc {
+    filename: &'static str,
+    // Warning: setting this to 'true' will cause the system to boot loop if there are any issues
+    // loading the bpf program.
+    critical: bool,
+    owner: u32,
+    group: u32,
+    maps: &'static [MapDesc],
+    progs: &'static [ProgDesc],
+}
+
+const PERM_GRW: mode_t = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP;
+const PERM_GRO: mode_t = S_IRUSR | S_IWUSR | S_IRGRP;
+const PERM_GWO: mode_t = S_IRUSR | S_IWUSR | S_IWGRP;
+const PERM_UGR: mode_t = S_IRUSR | S_IRGRP;
+
+const FILE_ARR: &[BpfFileDesc] = &[BpfFileDesc {
+    filename: "timeInState.bpf",
+    critical: false,
+    owner: AID_ROOT,
+    group: AID_SYSTEM,
+    maps: &[
+        MapDesc { name: "cpu_last_pid_map", perms: PERM_GWO },
+        MapDesc { name: "cpu_last_update_map", perms: PERM_GWO },
+        MapDesc { name: "cpu_policy_map", perms: PERM_GWO },
+        MapDesc { name: "freq_to_idx_map", perms: PERM_GWO },
+        MapDesc { name: "nr_active_map", perms: PERM_GWO },
+        MapDesc { name: "pid_task_aggregation_map", perms: PERM_GWO },
+        MapDesc { name: "pid_time_in_state_map", perms: PERM_GRO },
+        MapDesc { name: "pid_tracked_hash_map", perms: PERM_GWO },
+        MapDesc { name: "pid_tracked_map", perms: PERM_GWO },
+        MapDesc { name: "policy_freq_idx_map", perms: PERM_GWO },
+        MapDesc { name: "policy_nr_active_map", perms: PERM_GWO },
+        MapDesc { name: "total_time_in_state_map", perms: PERM_GRW },
+        MapDesc { name: "uid_concurrent_times_map", perms: PERM_GRW },
+        MapDesc { name: "uid_last_update_map", perms: PERM_GRW },
+        MapDesc { name: "uid_time_in_state_map", perms: PERM_GRW },
+    ],
+    progs: &[
+        ProgDesc { name: "tracepoint_power_cpu_frequency" },
+        ProgDesc { name: "tracepoint_sched_sched_process_free" },
+        ProgDesc { name: "tracepoint_sched_sched_switch" },
+    ],
+}];
+
+fn libbpf_worker(file_desc: &BpfFileDesc) -> Result<(), anyhow::Error> {
+    info!("Loading {}", file_desc.filename);
+    let filepath = Path::new("/etc/bpf/").join(file_desc.filename);
+    ensure!(filepath.exists(), "File not found {}", filepath.display());
+    let filename =
+        filepath.file_stem().ok_or_else(|| anyhow!("Failed to parse stem from filename"))?;
+    let filename = filename.to_str().ok_or_else(|| anyhow!("Failed to parse filename"))?;
+
+    let mut ob = ObjectBuilder::default();
+    let open_file = ob.open_file(&filepath)?;
+    let mut loaded_file = open_file.load()?;
+
+    let bpffs_path = "/sys/fs/bpf/".to_owned();
+
+    for mut map in loaded_file.maps_mut() {
+        let mut desc_found = false;
+        let name =
+            map.name().to_str().ok_or_else(|| anyhow!("Failed to parse map name into UTF-8"))?;
+        let name = String::from(name);
+        for map_desc in file_desc.maps {
+            if map_desc.name == name {
+                desc_found = true;
+                let pinpath_str = bpffs_path.clone() + "map_" + filename + "_" + &name;
+                let pinpath = Path::new(&pinpath_str);
+                debug!("Pinning: {}", pinpath.display());
+                map.pin(pinpath).map_err(|e| anyhow!("Failed to pin map {name}: {e}"))?;
+                fs::set_permissions(pinpath, Permissions::from_mode(map_desc.perms as _)).map_err(
+                    |e| {
+                        anyhow!(
+                            "Failed to set permissions: {} on pinned map {}: {e}",
+                            map_desc.perms,
+                            pinpath.display()
+                        )
+                    },
+                )?;
+                chown(pinpath, Some(file_desc.owner), Some(file_desc.group)).map_err(|e| {
+                    anyhow!(
+                        "Failed to chown {} with owner: {} group: {} err: {e}",
+                        pinpath.display(),
+                        file_desc.owner,
+                        file_desc.group
+                    )
+                })?;
+                break;
+            }
+        }
+        ensure!(desc_found, "Descriptor for {name} not found!");
+    }
+
+    for mut prog in loaded_file.progs_mut() {
+        let mut desc_found = false;
+        let name =
+            prog.name().to_str().ok_or_else(|| anyhow!("Failed to parse prog name into UTF-8"))?;
+        let name = String::from(name);
+        for prog_desc in file_desc.progs {
+            if prog_desc.name == name {
+                desc_found = true;
+                let pinpath_str = bpffs_path.clone() + "prog_" + filename + "_" + &name;
+                let pinpath = Path::new(&pinpath_str);
+                debug!("Pinning: {}", pinpath.display());
+                prog.pin(pinpath).map_err(|e| anyhow!("Failed to pin prog {name}: {e}"))?;
+                fs::set_permissions(pinpath, Permissions::from_mode(PERM_UGR as _)).map_err(
+                    |e| {
+                        anyhow!(
+                            "Failed to set permissions on pinned prog {}: {e}",
+                            pinpath.display()
+                        )
+                    },
+                )?;
+                chown(pinpath, Some(file_desc.owner), Some(file_desc.group)).map_err(|e| {
+                    anyhow!(
+                        "Failed to chown {} with owner: {} group: {} err: {e}",
+                        pinpath.display(),
+                        file_desc.owner,
+                        file_desc.group
+                    )
+                })?;
+                break;
+            }
+        }
+        ensure!(desc_found, "Descriptor for {name} not found!");
+    }
+    Ok(())
+}
+
 #[cfg(enable_libbpf)]
 fn load_libbpf_progs() {
-    // Libbpf loader functionality here.
     info!("Loading libbpf programs");
+    for file_desc in FILE_ARR {
+        if let Err(e) = libbpf_worker(file_desc) {
+            if file_desc.critical {
+                panic!("Error when loading {0}: {e}", file_desc.filename);
+            } else {
+                error!("Error when loading {0}: {e}", file_desc.filename);
+            }
+        };
+    }
 }
 
 #[cfg(not(enable_libbpf))]
 fn load_libbpf_progs() {
     // Empty stub for feature flag disabled case
-    info!("Loading of libbpf programs DISABLED");
+    info!("Loading libbpf programs DISABLED");
 }
 
 fn main() {
@@ -139,7 +296,7 @@ fn main() {
     }));
 
     load_libbpf_progs();
-    info!("Done, loading legacy BPF progs");
+    info!("Loading legacy BPF progs");
 
     // SAFETY: Linking in the existing legacy bpfloader functionality.
     // Any of the four following bindgen functions can abort() or exit()
