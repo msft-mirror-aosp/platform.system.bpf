@@ -48,6 +48,7 @@ cc_defaults {
         "-Werror=sometimes-uninitialized",
         "-Wextra",
         "-Wnullable-to-nonnull-conversion",
+        "-Wshadow",
         "-Wsign-compare",
         "-Wtautological-unsigned-zero-compare",
         "-Wthread-safety",
