@@ -45,6 +45,7 @@ cc_defaults {
         "-Werror",
         "-Wextra",
         "-Wnullable-to-nonnull-conversion",
+        "-Wtautological-unsigned-zero-compare",
         "-Wthread-safety",
         "-Wunused-parameter",
     ],
